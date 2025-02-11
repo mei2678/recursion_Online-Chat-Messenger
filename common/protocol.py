@@ -40,8 +40,13 @@ def encode_tcp_message(room_name: str, operation: int, state: int, op_payload: b
   """
   TCPメッセージをエンコードする。
   """
+  if isinstance(op_payload, str):
+    op_payload_bytes = op_payload.encode("utf-8")
+  else:
+    op_payload_bytes = op_payload
+    
   room_name_bytes = room_name.encode("utf-8")
-  if len(room_name_bytes) > TCP_PAYLOAD_MAX:  
+  if len(room_name_bytes) > TCP_ROOMNAME_SIZE:  
     raise ValueError(f"Room name is too long: {len(room_name_bytes)} bytes (max: {TCP_PAYLOAD_MAX} bytes)")
   if len(op_payload) > TCP_PAYLOAD_MAX:
     raise ValueError(f"Operation payload is too long: {len(op_payload)} bytes (max: {TCP_PAYLOAD_MAX} bytes)")
@@ -54,7 +59,18 @@ def encode_tcp_message(room_name: str, operation: int, state: int, op_payload: b
   # State
   state_byte = state.to_bytes(1, "big")
   # OperationPayloadSize: op_payloadの長さを固定幅29桁の0埋め10進数字に変換
-  op_payload_size_str =f"{len(op_payload):0{TCP_PAYLOAD_FIELD_WIDTH}d}"
+  op_payload_length_str = f"{len(op_payload):0{TCP_PAYLOAD_FIELD_WIDTH}d}"
+  op_payload_size_bytes = op_payload_length_str.encode("utf-8")
+  if len(op_payload_size_bytes) != TCP_PAYLOAD_FIELD_WIDTH:
+    raise ValueError(f"Internal error: Operation payload size field is not {TCP_PAYLOAD_FIELD_WIDTH} bytes")
+  
+  header = room_name_size_byte + operation_byte + state_byte + op_payload_size_bytes
+  if len(header) != TCP_HEADER_SIZE:
+    raise ValueError(f"Internal error: TCP header is not {TCP_HEADER_SIZE} bytes")
+  
+  # ボディの作成
+  body = room_name_bytes + op_payload_bytes
+  return header + body
   
 def decode_tcp_message(data: bytes) -> dict:
   """
@@ -83,10 +99,26 @@ def decode_tcp_message(data: bytes) -> dict:
   
   return {
     "room_name": room_name,
-    "operation": op_payload,
+    "operation": operation,
     "state": state,
     "op_payload": op_payload
   }
+def encode_udp_message(room_name: str, token: str, message: str) -> bytes:
+  """
+  UDPメッセージをエンコードする。
+  """
+  room_name_bytes = room_name.encode("utf-8")
+  token_bytes = token.encode("utf-8")
+  message_bytes = message.encode("utf-8")
+  
+  if len(room_name_bytes) > UDP_FIELD_MAX:
+    raise ValueError(f"Room name exceeds maximum length of {UDP_FIELD_MAX} bytes.")
+  if len(token_bytes) > UDP_FIELD_MAX:
+    raise ValueError(f"Token exceeds maximum length of {UDP_FIELD_MAX} bytes.")
+  
+  header = len(room_name_bytes).to_bytes(1, byteorder="big") + len(token_bytes).to_bytes(1, byteorder="big")
+  body = room_name_bytes + token_bytes + message_bytes
+  return header + body
   
 def decode_udp_message(data: bytes) -> dict:
   """

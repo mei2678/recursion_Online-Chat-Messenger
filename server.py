@@ -11,7 +11,7 @@ TCP_SERVER_PORT = 9000
 UDP_SERVER_PORT = 9001
 
 logging.basicConfig(
-  level=logging.info,
+  level=logging.INFO,
   format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
@@ -26,7 +26,7 @@ class ChatRoomManager:
     self.chat_rooms = {}
     
     
-  def create_chat_room(self, room_name: str, host_ip: str, host_username: str) -> str:
+  def create_chat_room(self, room_name: str, host_ip: str, host_username: str, host_udp_port: int) -> str:
     with self.lock:
       if room_name in self.chat_rooms:
         logging.warning(f"Chat room already exists: {room_name}")
@@ -34,10 +34,10 @@ class ChatRoomManager:
     
     token = uuid.uuid4().hex
     self.chat_rooms[room_name] = {
-      "host": {"ip": host_ip, "username": host_username, "token": token},
+      "host": {"ip": host_ip, "username": host_username, "token": token, "port": host_udp_port},
       "participants": {}
     }
-    logging.info(f"Created Chat room {room_name} with host token: {token}")
+    logging.info(f"Created Chat room {room_name} with host token: {token} and UDP port: {host_udp_port}")
     return token
   
   
@@ -91,16 +91,29 @@ def handle_tcp_connection(conn: socket.socket, addr):
       state = message.get("state")
       op_payload = message.get("op_payload")
       
-      username = op_payload.decode("utf-8")
-      logging.info(f"TCP request from {addr} room name: {room_name}, operation: {operation}, state: {state}")
+      op_payload_decoded = op_payload.decode("utf-8")
+      parts = op_payload_decoded.split(",")
+      username = parts[0]
+      if len(parts) > 1:
+        try:
+          host_udp_port = int(parts[1])
+        except ValueError:
+          host_udp_port = None
+      else:
+        host_udp_port = None
+      
+      logging.info(f"TCP request from {addr} room name: {room_name}, operation: {operation}, state: {state}, username: {username}, host_udp_port: {host_udp_port}")
       
       if operation == 1:
-        # チャットルーム作成要求
-        token = chat_room_manager.create_chat_room(room_name, addr[0], username)
-        if token is None:
-          response_payload = "ERROR: chat room is already exist. {room_name}"
+        if host_udp_port is None:
+          logging.error(f"UDP port not provided by host in creation request")
+          response_payload = "ERROR: UDP port not provided".encode("utf-8")
         else:
-          response_payload = token.encode("utf-8")
+          token = chat_room_manager.create_chat_room(room_name, addr[0], username, host_udp_port)
+          if token is None:
+            response_payload = "ERROR: chat room is already exist. {room_name}"
+          else:
+            response_payload = token.encode("utf-8")
       elif operation == 2:
         # チャットルーム参加要求
         token = chat_room_manager.join_chat_room(room_name, addr[0], username)
@@ -154,7 +167,9 @@ def handle_udp_message(data: bytes, addr, udp_sock: socket.socket):
     
     valid = False
     # ホストの場合のトークン確認
-    if chat_room["host"]["ip"] == addr[0] and chat_room["host"]["token"] == token:
+    host_info = chat_room["host"]
+    host_addr = (host_info["ip"], host_info["port"])
+    if host_addr == addr and host_info["token"] == token:
       valid = True
     # 参加者の場合のトークン確認
     else:
@@ -167,7 +182,7 @@ def handle_udp_message(data: bytes, addr, udp_sock: socket.socket):
       
     # リレー処理(チャットルームの全ての参加者へ送信、ホスト含む)
     relay_data = chat_text.encode("utf-8")
-    host_addr = (chat_room["host"]["ip"], UDP_SERVER_PORT)
+    host_addr = (chat_room["host"]["ip"], chat_room["host"]["port"])
     if host_addr != addr:
       udp_sock.sendto(relay_data, host_addr)
     for part_ip, part_info in chat_room["participants"].items():
